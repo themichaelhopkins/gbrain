@@ -9,9 +9,24 @@
 
 import OpenAI from 'openai';
 
-const MODEL = 'text-embedding-3-large';
-const DIMENSIONS = 1536;
-const MAX_CHARS = 8000;
+// Configurable via env vars; defaults preserve prior OpenAI behavior.
+const MODEL = process.env.GBRAIN_EMBED_MODEL || 'text-embedding-3-large';
+const DIMENSIONS = process.env.GBRAIN_EMBED_DIMENSIONS
+  ? parseInt(process.env.GBRAIN_EMBED_DIMENSIONS, 10)
+  : 1536;
+const BASE_URL = process.env.GBRAIN_EMBED_BASE_URL || process.env.OPENAI_BASE_URL;
+const API_KEY = process.env.GBRAIN_EMBED_API_KEY || process.env.OPENAI_API_KEY;
+// Some providers (e.g. NVIDIA NIM asymmetric retrieval models) require
+// input_type=query|passage. Emit it only when GBRAIN_EMBED_INPUT_TYPE is set.
+const INPUT_TYPE = process.env.GBRAIN_EMBED_INPUT_TYPE;
+// OpenAI supports a `dimensions` param; most alt providers reject it.
+const SEND_DIMENSIONS_PARAM = (process.env.GBRAIN_EMBED_SEND_DIMENSIONS ?? 'true') !== 'false';
+
+// Max input chars per text. OpenAI text-embedding-3-large accepts ~32k chars.
+// NIM nv-embedqa-e5-v5 caps at 512 tokens (~1600 chars safe).
+const MAX_CHARS = process.env.GBRAIN_EMBED_MAX_CHARS
+  ? parseInt(process.env.GBRAIN_EMBED_MAX_CHARS, 10)
+  : 8000;
 const MAX_RETRIES = 5;
 const BASE_DELAY_MS = 4000;
 const MAX_DELAY_MS = 120000;
@@ -21,7 +36,10 @@ let client: OpenAI | null = null;
 
 function getClient(): OpenAI {
   if (!client) {
-    client = new OpenAI();
+    client = new OpenAI({
+      ...(API_KEY ? { apiKey: API_KEY } : {}),
+      ...(BASE_URL ? { baseURL: BASE_URL } : {}),
+    });
   }
   return client;
 }
@@ -49,11 +67,14 @@ export async function embedBatch(texts: string[]): Promise<Float32Array[]> {
 async function embedBatchWithRetry(texts: string[]): Promise<Float32Array[]> {
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      const response = await getClient().embeddings.create({
+      const params: Record<string, unknown> = {
         model: MODEL,
         input: texts,
-        dimensions: DIMENSIONS,
-      });
+      };
+      if (SEND_DIMENSIONS_PARAM) params.dimensions = DIMENSIONS;
+      if (INPUT_TYPE) params.input_type = INPUT_TYPE;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const response = await getClient().embeddings.create(params as any);
 
       // Sort by index to maintain order
       const sorted = response.data.sort((a, b) => a.index - b.index);

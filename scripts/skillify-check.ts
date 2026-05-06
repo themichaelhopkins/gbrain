@@ -270,6 +270,10 @@ Exit code 0 when everything required passes; 1 otherwise.
     : args.filter(a => !a.startsWith('--'));
 
   if (targets.length === 0) {
+    if (json && recent) {
+      console.log(JSON.stringify([], null, 2));
+      process.exit(0);
+    }
     console.error('No targets. Pass a path or --recent.');
     process.exit(1);
   }
