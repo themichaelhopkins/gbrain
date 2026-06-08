@@ -1126,14 +1126,24 @@ async function runPhaseResolveSymbolEdges(
   }
 }
 
-async function runPhaseEmbed(engine: BrainEngine, dryRun: boolean, signal?: AbortSignal): Promise<PhaseResult> {
+async function runPhaseEmbed(engine: BrainEngine, dryRun: boolean, signal?: AbortSignal, sourceId?: string): Promise<PhaseResult> {
   try {
     const { runEmbedCore } = await import('../commands/embed.ts');
     // #1737: thread the cycle's abort signal so the embed phase (the long,
     // 10-15 min one) bails within a batch instead of running to completion
     // after the job was killed — which left gbrain_cycle_locks held and
     // wedged every subsequent autopilot cycle.
-    const result = await runEmbedCore(engine, { stale: true, dryRun, signal });
+    //
+    // 2026-06-08: scope the embed phase to the cycle's source. runEmbedCore
+    // already supports opts.sourceId (the `gbrain embed --stale --source X`
+    // path); the per-source cycle previously omitted it, so EVERY per-source
+    // cycle drained the ENTIRE global stale backlog. On a slow embed endpoint
+    // that guaranteed the wall-clock timeout → no cycle ever completed →
+    // last_full_cycle_at never written → cycle_freshness stuck FAIL. Scoping it
+    // lets a per-source cycle finish on its own (few) stale chunks; the global
+    // backlog still drains via the source-less embed pass (curated-refresh /
+    // a global cycle, where sourceId is undefined → unchanged global behavior).
+    const result = await runEmbedCore(engine, { stale: true, dryRun, signal, sourceId });
     const embeddedCount = dryRun ? result.would_embed : result.embedded;
     return {
       phase: 'embed',
@@ -2081,7 +2091,7 @@ export async function runCycle(
         });
       } else {
         progress.start('cycle.embed');
-        const { result, duration_ms } = await timePhase(() => runPhaseEmbed(engine, dryRun, opts.signal));
+        const { result, duration_ms } = await timePhase(() => runPhaseEmbed(engine, dryRun, opts.signal, opts.sourceId));
         result.duration_ms = duration_ms;
         phaseResults.push(result);
         progress.finish();
