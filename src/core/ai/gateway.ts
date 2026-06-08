@@ -705,11 +705,21 @@ export function diagnoseEmbedding(modelOverride?: string): EmbeddingDiagnosis {
   }
 
   // Openai-compat recipes with empty models list require a user-provided model.
+  // The user supplies it inline as `provider:model` (e.g. `litellm:<model>`),
+  // which parseModelId() has already split into parsed.modelId — and that parse
+  // THROWS when the model segment is empty (caught above as unknown_provider).
+  // So only flag "unset" when the model id is genuinely absent; an empty static
+  // allow-list alone is expected for these recipes (the user knows their proxied
+  // models). This mirrors assertTouchpoint(), the real embed path: empty
+  // tp.models means "trust the user-supplied model", not "reject it". Without
+  // this !parsed.modelId guard the preflight fired for EVERY litellm config and
+  // blocked all doc-embed while query-embed (which skips this preflight) worked.
   const isUserProvided = (tp as any).user_provided_models === true;
   if (
     Array.isArray(tp.models) &&
     tp.models.length === 0 &&
-    (recipe.id === 'litellm' || isUserProvided)
+    (recipe.id === 'litellm' || isUserProvided) &&
+    !parsed.modelId
   ) {
     return {
       ok: false,
