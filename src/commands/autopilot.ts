@@ -646,8 +646,26 @@ export async function runAutopilot(engine: BrainEngine, args: string[]) {
             const sources = await loadAllSources(engine);
             const intervalMs = baseInterval * 1000;
             const now = Date.now();
+            // 2026-06-11 local fix: the standalone 'sync' job handler routes to
+            // performSync, which hard-requires `<local_path>/.git` (sync.ts repo
+            // validation). Sources registered on SUBDIRS of a git repo (e.g.
+            // fabric/decisions, fabric/.brv/context-tree) can never pass it —
+            // every freshness-dispatched job died `dead` (~28/day observed, ctx
+            // re-enqueued every cycle forever). The autopilot cycle path keeps
+            // those sources fresh (last_full_cycle_at advances); only enqueue
+            // standalone sync for sources whose path is an actual repo root.
+            const { existsSync: fsExists } = await import('node:fs');
+            const { join: pathJoin } = await import('node:path');
             for (const src of sources) {
               if (!src.local_path) continue;
+              if (!fsExists(pathJoin(src.local_path, '.git'))) {
+                if (jsonMode) {
+                  process.stderr.write(JSON.stringify({
+                    event: 'freshness_skip_non_repo_root', source_id: src.id,
+                  }) + '\n');
+                }
+                continue;
+              }
               const lastSyncMs = src.last_sync_at ? new Date(src.last_sync_at).getTime() : 0;
               const ageMs = now - lastSyncMs;
               if (ageMs < intervalMs) continue; // fresh enough
