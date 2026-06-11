@@ -1,5 +1,32 @@
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
+import { createHash } from 'crypto';
+
+// Filesystem-safe slug → path mapping (2026-06-11): page slugs are unbounded
+// (titles become slugs), but each path SEGMENT must stay under the 255-byte
+// filename limit or export crashes with ENAMETOOLONG mid-run. Clamp long
+// segments to 180 bytes + a stable 8-char sha1 suffix so truncated names
+// remain unique and deterministic across runs.
+function safeSegment(s: string): string {
+  if (Buffer.byteLength(s, 'utf8') <= 200) return s;
+  const h = createHash('sha1').update(s).digest('hex').slice(0, 8);
+  let t = s;
+  while (Buffer.byteLength(t, 'utf8') > 180) t = t.slice(0, -1);
+  return `${t}~${h}`;
+}
+function safeSlugPath(slug: string): string {
+  const mapped = slug.split('/').map(safeSegment).join('/');
+  // Per-segment clamping is not enough: slugs derived from prose titles can
+  // contain literal '/' (quoted unix paths), producing deep trees whose TOTAL
+  // path exceeds PATH_MAX (~1024 bytes) even when every segment is short.
+  // Clamp the whole relative path to ~600 bytes + stable hash.
+  if (Buffer.byteLength(mapped, 'utf8') <= 600) return mapped;
+  const h = createHash('sha1').update(slug).digest('hex').slice(0, 8);
+  let t = mapped;
+  while (Buffer.byteLength(t, 'utf8') > 580) t = t.slice(0, -1);
+  t = t.replace(/\/+$/, '');
+  return `${t}~${h}`;
+}
 import type { BrainEngine } from '../core/engine.ts';
 import { serializeMarkdown } from '../core/markdown.ts';
 import { createProgress } from '../core/progress.ts';
@@ -87,7 +114,7 @@ export async function runExport(engine: BrainEngine, args: string[]) {
         if (seen.has(p.slug)) continue;
         seen.add(p.slug);
         if (!isDbOnly(p.slug, storageConfig)) continue; // belt-and-suspenders
-        const filePath = join(repoPath, p.slug + '.md');
+        const filePath = join(repoPath, safeSlugPath(p.slug) + '.md');
         if (existsSync(filePath)) continue;
         pages.push(p);
       }
@@ -116,14 +143,14 @@ export async function runExport(engine: BrainEngine, args: string[]) {
       { type: page.type, title: page.title, tags },
     );
 
-    const filePath = join(outDir, page.slug + '.md');
+    const filePath = join(outDir, safeSlugPath(page.slug) + '.md');
     mkdirSync(dirname(filePath), { recursive: true });
     writeFileSync(filePath, md);
 
     // Export raw data as sidecar JSON
     const rawData = await engine.getRawData(page.slug);
     if (rawData.length > 0) {
-      const slugParts = page.slug.split('/');
+      const slugParts = safeSlugPath(page.slug).split('/');
       const rawDir = join(outDir, ...slugParts.slice(0, -1), '.raw');
       mkdirSync(rawDir, { recursive: true });
       const rawPath = join(rawDir, slugParts[slugParts.length - 1] + '.json');
